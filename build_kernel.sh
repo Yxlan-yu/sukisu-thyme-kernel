@@ -381,6 +381,63 @@ PYEOF
     grep -n 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)' drivers/kernelsu/feature/selinux_hide.c drivers/kernelsu/selinux/rules.c drivers/kernelsu/selinux/sepolicy.c || true
     grep -n 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)' drivers/kernelsu/infra/seccomp_cache.c drivers/kernelsu/manager/pkg_observer.c || true
     grep -n 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)' drivers/kernelsu/feature/kernel_umount.c || true
+
+    # ------------------------------------------------------------------
+    # 4.19 compatibility: infra/su_mount_ns.c pulls <uapi/linux/mount.h>
+    # (introduced in 5.2) and calls path_mount() (added in 5.12).  On 4.19
+    # MS_PRIVATE / MS_REC come from <uapi/linux/fs.h> (already pulled in
+    # through <linux/fs.h>) and there is no path_mount(), so the private
+    # remount of "/" is skipped -- Android init already marks it private.
+    # ------------------------------------------------------------------
+    echo "[*] Patching SukiSU infra/su_mount_ns.c for 4.19..."
+    python3 - drivers/kernelsu/infra/su_mount_ns.c <<'PYEOF'
+import sys
+
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+
+# 1) <uapi/linux/mount.h> only exists from 5.2 on
+old1 = '#include <uapi/linux/mount.h>\n'
+assert s.count(old1) == 1, 'unexpected uapi/linux/mount.h include count: %d' % s.count(old1)
+new1 = (
+    '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 2, 0)\n'
+    '#include <uapi/linux/mount.h>\n'
+    '#endif\n'
+)
+s = s.replace(old1, new1)
+
+# 2) path_mount() was introduced in 5.12
+old2 = (
+    'extern int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags,\n'
+    '                      void *data_page);\n'
+)
+assert s.count(old2) == 1, 'unexpected path_mount decl count: %d' % s.count(old2)
+new2 = (
+    '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)\n'
+    'extern int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags,\n'
+    '                      void *data_page);\n'
+    '#endif\n'
+)
+s = s.replace(old2, new2)
+
+# 3) the call site itself
+old3 = '    int pm_ret = path_mount(NULL, &root_path, NULL, MS_PRIVATE | MS_REC, NULL);\n'
+assert s.count(old3) == 1, 'unexpected path_mount call count: %d' % s.count(old3)
+new3 = (
+    '    int pm_ret = 0;\n'
+    '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)\n'
+    '    pm_ret = path_mount(NULL, &root_path, NULL, MS_PRIVATE | MS_REC, NULL);\n'
+    '#else\n'
+    '    /* 4.19: no path_mount(); Android init already made / private */\n'
+    '#endif\n'
+)
+s = s.replace(old3, new3)
+
+open(p, 'w', encoding='utf-8', newline='\n').write(s)
+print('[*] su_mount_ns.c patched')
+PYEOF
+    grep -n 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 2, 0)' drivers/kernelsu/infra/su_mount_ns.c || true
+    grep -n 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)' drivers/kernelsu/infra/su_mount_ns.c || true
 fi
 
 # ==========================================
