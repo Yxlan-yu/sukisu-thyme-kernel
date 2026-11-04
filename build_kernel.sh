@@ -276,8 +276,74 @@ assert 'LINUX_VERSION_CODE' not in s.split('\n')[0]
 open(p, 'w', encoding='utf-8', newline='\n').write(head + s + tail)
 print('[*] seccomp_cache.c guarded')
 PYEOF
+    # ------------------------------------------------------------------
+    # 4.19 compatibility: struct fsnotify_ops has no ->handle_inode_event
+    # before 5.9. Older kernels dispatch through ->handle_event(group,
+    # inode, mask, data, data_type, file_name, cookie, iter_info), where
+    # the name arrives as a bare NUL-less string. Rebuild a struct qstr
+    # from it and forward to the 5.9+ handler.
+    #
+    # NOTE: qstr.len is NOT NUL-terminated upstream, so the length is
+    # derived by a bounded scan; qstr.hash is left 0 (only consumed by
+    # dentry hashing, never by this handler).
+    # ------------------------------------------------------------------
+    echo "[*] Patching SukiSU manager/pkg_observer.c for pre-5.9 kernels..."
+    python3 - drivers/kernelsu/manager/pkg_observer.c <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+
+old = ('static const struct fsnotify_ops ksu_ops = {\n'
+       '    .handle_inode_event = ksu_handle_inode_event,\n'
+       '};\n')
+assert s.count(old) == 1, 'unexpected ksu_ops count: %d' % s.count(old)
+
+new = (
+    '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)\n'
+    'static const struct fsnotify_ops ksu_ops = {\n'
+    '    .handle_inode_event = ksu_handle_inode_event,\n'
+    '};\n'
+    '#else /* < 5.9.0: only ->handle_event exists, no ->handle_inode_event */\n'
+    'static int ksu_handle_event_compat(struct fsnotify_group *group,\n'
+    '                                   struct inode *inode, u32 mask,\n'
+    '                                   const void *data, int data_type,\n'
+    '                                   const unsigned char *file_name,\n'
+    '                                   u32 cookie,\n'
+    '                                   struct fsnotify_iter_info *iter_info)\n'
+    '{\n'
+    '    struct qstr name;\n'
+    '    unsigned int len = 0;\n'
+    '\n'
+    '    (void)group;\n'
+    '    (void)inode;\n'
+    '    (void)data;\n'
+    '    (void)data_type;\n'
+    '    (void)iter_info;\n'
+    '\n'
+    '    if (!file_name)\n'
+    '        return 0;\n'
+    '\n'
+    '    /* file_name is not NUL-terminated upstream; scan bounded. */\n'
+    '    while (len < 255 && file_name[len])\n'
+    '        len++;\n'
+    '\n'
+    '    name.name = file_name;\n'
+    '    name.hash = 0;\n'
+    '    name.len = len;\n'
+    '\n'
+    '    return ksu_handle_inode_event(NULL, mask, inode, NULL, &name, cookie);\n'
+    '}\n'
+    '\n'
+    'static const struct fsnotify_ops ksu_ops = {\n'
+    '    .handle_event = ksu_handle_event_compat,\n'
+    '};\n'
+    '#endif\n'
+)
+open(p, 'w', encoding='utf-8', newline='\n').write(s.replace(old, new))
+print('[*] pkg_observer.c patched')
+PYEOF
     grep -n 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)' drivers/kernelsu/feature/selinux_hide.c drivers/kernelsu/selinux/rules.c drivers/kernelsu/selinux/sepolicy.c || true
-    grep -n 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)' drivers/kernelsu/infra/seccomp_cache.c || true
+    grep -n 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)' drivers/kernelsu/infra/seccomp_cache.c drivers/kernelsu/manager/pkg_observer.c || true
 fi
 
 # ==========================================
