@@ -83,6 +83,26 @@ if [ "$ENABLE_KSU" -eq 1 ]; then
     fi
     echo "[+] SukiSU setup finished."
     echo "[*] SukiSU tree:"; ls -la drivers/kernelsu | head -20
+
+    # ------------------------------------------------------------------
+    # 4.19 compatibility: MODULE_IMPORT_NS() does not exist before 5.4
+    # (it appeared in 5.4, string form only in 6.13). SukiSU v4.3.0-r1
+    # emits the unquoted form for every kernel < 6.13, so guard it.
+    # ------------------------------------------------------------------
+    echo "[*] Patching SukiSU MODULE_IMPORT_NS for pre-5.4 kernels..."
+    python3 - drivers/kernelsu/core/init.c <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = 'MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);'
+new = ('#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)\n'
+       'MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);\n'
+       '#endif')
+assert s.count(old) == 1, 'unexpected MODULE_IMPORT_NS count: %d' % s.count(old)
+open(p, 'w', encoding='utf-8').write(s.replace(old, new))
+print('[*] init.c patched')
+PYEOF
+    grep -n -A2 -B2 'MODULE_IMPORT_NS' drivers/kernelsu/core/init.c || true
 fi
 
 # ==========================================
