@@ -248,7 +248,36 @@ tail = ('\n#else /* < 5.7.0: policydb rewrite helpers are 5.7+ only */\n'
 open(p, 'w', encoding='utf-8', newline='\n').write(head + s + tail)
 print('[*] sepolicy.c guarded')
 PYEOF
+    # ------------------------------------------------------------------
+    # 4.19 compatibility: the seccomp action cache
+    # (struct seccomp_filter::cache + SECCOMP_ARCH_NATIVE_NR) only exists
+    # since 5.9, and 4.19's struct seccomp_filter has a completely
+    # different layout -- patching only the macro would silently corrupt
+    # memory (set_bit writes over ->prog). Guard the whole file and stub
+    # the two exported entry points instead.
+    # ------------------------------------------------------------------
+    echo "[*] Stubbing SukiSU infra/seccomp_cache.c for pre-5.9 kernels..."
+    python3 - drivers/kernelsu/infra/seccomp_cache.c <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+head = ('#include <linux/version.h>\n\n'
+        '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)\n')
+tail = ('\n#else /* < 5.9.0: no seccomp action cache, no SECCOMP_ARCH_NATIVE_NR */\n'
+        'struct seccomp_filter;\n\n'
+        'void ksu_seccomp_clear_cache(struct seccomp_filter *filter, int nr)\n'
+        '{\n'
+        '}\n\n'
+        'void ksu_seccomp_allow_cache(struct seccomp_filter *filter, int nr)\n'
+        '{\n'
+        '}\n'
+        '#endif\n')
+assert 'LINUX_VERSION_CODE' not in s.split('\n')[0]
+open(p, 'w', encoding='utf-8', newline='\n').write(head + s + tail)
+print('[*] seccomp_cache.c guarded')
+PYEOF
     grep -n 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)' drivers/kernelsu/feature/selinux_hide.c drivers/kernelsu/selinux/rules.c drivers/kernelsu/selinux/sepolicy.c || true
+    grep -n 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)' drivers/kernelsu/infra/seccomp_cache.c || true
 fi
 
 # ==========================================
