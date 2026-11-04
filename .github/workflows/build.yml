@@ -6,7 +6,9 @@ on:
 jobs:
   build-thyme:
     name: Build thyme | SukiSU v4.3.0-r1 | MIUI
-    runs-on: ubuntu-latest
+    # 固定 24.04：26.04 (resolute) 已把 libxml2 升到 soname 16，
+    # 预编译 zyc-clang 的 ld.lld 硬依赖 libxml2.so.2，在 26.04 上必挂。
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
