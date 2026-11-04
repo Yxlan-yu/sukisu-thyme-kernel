@@ -32,6 +32,20 @@ jobs:
             printf '%-8s ' "$t"; command -v "$t" || echo MISSING
           done
 
+      - name: Runtime libs for prebuilt clang/lld
+        run: |
+          echo "--- apt candidates named libxml2* ---"
+          apt-cache search --names-only '^libxml2' || true
+          for p in libxml2 libxml2-16 libxml2-2 libxml2t64 libxml2-shlibs libxml2-dev; do
+            sudo apt-get install -y "$p" >/dev/null 2>&1 && echo "installed: $p" || echo "skip: $p"
+          done
+          sudo apt-get install -y lld || true
+          echo "--- ldconfig libxml2 ---"
+          ldconfig -p | grep -i libxml2 || echo "libxml2 STILL MISSING"
+          echo "--- lld sanity ---"
+          ~/zyc-clang/bin/ld.lld --version || echo "zyc ld.lld BROKEN"
+          ld.lld --version || true
+
       - name: Cache ccache
         uses: actions/cache@v6
         with:
