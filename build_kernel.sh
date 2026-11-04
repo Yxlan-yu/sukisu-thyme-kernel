@@ -342,8 +342,45 @@ new = (
 open(p, 'w', encoding='utf-8', newline='\n').write(s.replace(old, new))
 print('[*] pkg_observer.c patched')
 PYEOF
+    # ------------------------------------------------------------------
+    # 4.19 compatibility: fs/namespace.c has no path_umount() (it landed
+    # in 5.12) and ksys_umount() is not exported, so the extern
+    # declaration in feature/kernel_umount.c would break vmlinux linking.
+    # Provide an internal no-op stub on older kernels; the
+    # "kernel umount" feature then reports -EOPNOTSUPP when triggered.
+    # ------------------------------------------------------------------
+    echo "[*] Patching SukiSU feature/kernel_umount.c for pre-5.12 kernels..."
+    python3 - drivers/kernelsu/feature/kernel_umount.c <<'PYEOF'
+import sys
+
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+
+old = 'extern int path_umount(struct path *path, int flags);\n'
+assert s.count(old) == 1, 'unexpected path_umount decl count: %d' % s.count(old)
+
+new = (
+    '#include <linux/version.h>\n'
+    '#include <linux/errno.h>\n'
+    '\n'
+    '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)\n'
+    'extern int path_umount(struct path *path, int flags);\n'
+    '#else /* < 5.12.0: fs/namespace.c has no path_umount(), stub it out */\n'
+    'static int path_umount(struct path *path, int flags)\n'
+    '{\n'
+    '    (void)path;\n'
+    '    (void)flags;\n'
+    '    return -EOPNOTSUPP;\n'
+    '}\n'
+    '#endif\n'
+)
+
+open(p, 'w', encoding='utf-8', newline='\n').write(s.replace(old, new))
+print('[*] kernel_umount.c patched')
+PYEOF
     grep -n 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)' drivers/kernelsu/feature/selinux_hide.c drivers/kernelsu/selinux/rules.c drivers/kernelsu/selinux/sepolicy.c || true
     grep -n 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)' drivers/kernelsu/infra/seccomp_cache.c drivers/kernelsu/manager/pkg_observer.c || true
+    grep -n 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)' drivers/kernelsu/feature/kernel_umount.c || true
 fi
 
 # ==========================================
