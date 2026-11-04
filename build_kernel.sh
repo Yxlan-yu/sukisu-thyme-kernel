@@ -144,7 +144,7 @@ PYEOF
     # fallthrough keyword (5.4+).
     # ------------------------------------------------------------------
     echo "[*] Patching SukiSU task_work / string helpers for 4.19..."
-    python3 - policy/allowlist.c supercall/supercall.c <<'PYEOF'
+    python3 - drivers/kernelsu/policy/allowlist.c drivers/kernelsu/supercall/supercall.c <<'PYEOF'
 import sys
 
 twa = ('#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0) && !defined(TWA_RESUME)\n'
@@ -159,7 +159,7 @@ for p in sys.argv[1:]:
     open(p, 'w', encoding='utf-8', newline='\n').write(s)
     print('[*] %s: TWA_RESUME fallback added' % p)
 PYEOF
-    python3 - policy/allowlist.c <<'PYEOF'
+    python3 - drivers/kernelsu/policy/allowlist.c <<'PYEOF'
 import sys
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
@@ -186,7 +186,7 @@ s = s.replace(old, new)
 open(p, 'w', encoding='utf-8', newline='\n').write(s)
 print('[*] allowlist.c patched')
 PYEOF
-    grep -n 'TWA_RESUME' policy/allowlist.c supercall/supercall.c || true
+    grep -n 'TWA_RESUME' drivers/kernelsu/policy/allowlist.c drivers/kernelsu/supercall/supercall.c || true
 
     # ------------------------------------------------------------------
     # 4.19 compatibility: struct selinux_policy only exists since 5.7, so
@@ -194,7 +194,7 @@ PYEOF
     # Stub out their public entry points so the rest of SukiSU links.
     # ------------------------------------------------------------------
     echo "[*] Stubbing SukiSU selinux rules / selinux_hide for pre-5.7 kernels..."
-    python3 - feature/selinux_hide.c <<'PYEOF'
+    python3 - drivers/kernelsu/feature/selinux_hide.c <<'PYEOF'
 import sys
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
@@ -211,14 +211,15 @@ assert 'LINUX_VERSION_CODE' not in s.split('\n')[0]
 open(p, 'w', encoding='utf-8', newline='\n').write(head + s + tail)
 print('[*] selinux_hide.c guarded')
 PYEOF
-    python3 - selinux/rules.c <<'PYEOF'
+    python3 - drivers/kernelsu/selinux/rules.c <<'PYEOF'
 import sys
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
 head = ('#include <linux/version.h>\n'
         '#include <linux/types.h>\n'
         '#include <linux/compiler_types.h>\n'
-        '#include <linux/errno.h>\n\n'
+        '#include <linux/errno.h>\n'
+        '#include <linux/printk.h>\n\n'
         '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)\n')
 tail = ('\n#else /* < 5.7.0: no struct selinux_policy, so no sepolicy patching */\n'
         'struct selinux_policy *backup_sepolicy = NULL;\n\n'
@@ -234,11 +235,12 @@ tail = ('\n#else /* < 5.7.0: no struct selinux_policy, so no sepolicy patching *
 open(p, 'w', encoding='utf-8', newline='\n').write(head + s + tail)
 print('[*] rules.c guarded')
 PYEOF
-    python3 - selinux/sepolicy.c <<'PYEOF'
+    python3 - drivers/kernelsu/selinux/sepolicy.c <<'PYEOF'
 import sys
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
-head = ('#include <linux/version.h>\n\n'
+head = ('#include <linux/version.h>\n'
+        '#include <linux/compiler_types.h>\n\n'
         '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)\n')
 tail = ('\n#else /* < 5.7.0: policydb rewrite helpers are 5.7+ only */\n'
         'static int __maybe_unused ksu_sepolicy_stub;\n'
@@ -246,7 +248,7 @@ tail = ('\n#else /* < 5.7.0: policydb rewrite helpers are 5.7+ only */\n'
 open(p, 'w', encoding='utf-8', newline='\n').write(head + s + tail)
 print('[*] sepolicy.c guarded')
 PYEOF
-    grep -n 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)' feature/selinux_hide.c selinux/rules.c selinux/sepolicy.c || true
+    grep -n 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)' drivers/kernelsu/feature/selinux_hide.c drivers/kernelsu/selinux/rules.c drivers/kernelsu/selinux/sepolicy.c || true
 fi
 
 # ==========================================
