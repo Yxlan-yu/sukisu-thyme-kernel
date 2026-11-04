@@ -103,6 +103,150 @@ open(p, 'w', encoding='utf-8').write(s.replace(old, new))
 print('[*] init.c patched')
 PYEOF
     grep -n -A2 -B2 'MODULE_IMPORT_NS' drivers/kernelsu/core/init.c || true
+
+    # ------------------------------------------------------------------
+    # 4.19 compatibility: struct file_operations lacks ->iopoll (5.1+)
+    # and ->remap_file_range (4.20+; 4.19 exposes dedupe_file_range).
+    # ------------------------------------------------------------------
+    echo "[*] Patching SukiSU infra/file_wrapper.c for pre-5.x kernels..."
+    python3 - drivers/kernelsu/infra/file_wrapper.c <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+
+m1 = '#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)\nstatic int ksu_wrapper_iopoll'
+m2 = '#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)\nstatic int ksu_wrapper_iterate'
+i = s.index(m1)
+j = s.index(m2)
+s = s[:i] + '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n' + s[i:j] + '#endif\n\n' + s[j:]
+
+i = s.index('static loff_t ksu_wrapper_remap_file_range(')
+j = s.index('static int ksu_wrapper_fadvise(')
+s = s[:i] + '#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\n' + s[i:j] + '#endif\n\n' + s[j:]
+
+old = '    p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;\n'
+new = '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n' + old + '#endif\n'
+assert s.count(old) == 1, 'unexpected iopoll assignment count: %d' % s.count(old)
+s = s.replace(old, new)
+
+old = '    p->ops.remap_file_range = fp->f_op->remap_file_range ? ksu_wrapper_remap_file_range : NULL;\n'
+new = '#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\n' + old + '#endif\n'
+assert s.count(old) == 1, 'unexpected remap assignment count: %d' % s.count(old)
+s = s.replace(old, new)
+
+open(p, 'w', encoding='utf-8', newline='\n').write(s)
+print('[*] file_wrapper.c patched')
+PYEOF
+    grep -n 'iopoll\|remap_file_range' drivers/kernelsu/infra/file_wrapper.c || true
+
+    # ------------------------------------------------------------------
+    # 4.19 compatibility: TWA_RESUME (5.8+), strscpy_pad (4.20+) and the
+    # fallthrough keyword (5.4+).
+    # ------------------------------------------------------------------
+    echo "[*] Patching SukiSU task_work / string helpers for 4.19..."
+    python3 - policy/allowlist.c supercall/supercall.c <<'PYEOF'
+import sys
+
+twa = ('#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0) && !defined(TWA_RESUME)\n'
+       '#define TWA_RESUME 1\n'
+       '#endif\n')
+
+for p in sys.argv[1:]:
+    s = open(p, encoding='utf-8').read()
+    anchor = '#include <linux/version.h>\n'
+    assert s.count(anchor) == 1, '%s: version.h include count %d' % (p, s.count(anchor))
+    s = s.replace(anchor, anchor + twa)
+    open(p, 'w', encoding='utf-8', newline='\n').write(s)
+    print('[*] %s: TWA_RESUME fallback added' % p)
+PYEOF
+    python3 - policy/allowlist.c <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+
+old = 'strscpy_pad(domain, KSU_DEFAULT_SELINUX_DOMAIN, domain_len);'
+new = ('#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\n'
+       '                strscpy_pad(domain, KSU_DEFAULT_SELINUX_DOMAIN, domain_len);\n'
+       '#else\n'
+       '                memset(domain, 0, domain_len);\n'
+       '                strlcpy(domain, KSU_DEFAULT_SELINUX_DOMAIN, domain_len);\n'
+       '#endif')
+assert s.count(old) == 1, 'strscpy_pad count: %d' % s.count(old)
+s = s.replace(old, new)
+
+old = '        fallthrough;'
+new = ('#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)\n'
+       '        fallthrough;\n'
+       '#else\n'
+       '        /* fallthrough */\n'
+       '#endif')
+assert s.count(old) == 1, 'fallthrough count: %d' % s.count(old)
+s = s.replace(old, new)
+
+open(p, 'w', encoding='utf-8', newline='\n').write(s)
+print('[*] allowlist.c patched')
+PYEOF
+    grep -n 'TWA_RESUME' policy/allowlist.c supercall/supercall.c || true
+
+    # ------------------------------------------------------------------
+    # 4.19 compatibility: struct selinux_policy only exists since 5.7, so
+    # the sepolicy rule engine and the SELinux hide feature are 5.7+ only.
+    # Stub out their public entry points so the rest of SukiSU links.
+    # ------------------------------------------------------------------
+    echo "[*] Stubbing SukiSU selinux rules / selinux_hide for pre-5.7 kernels..."
+    python3 - feature/selinux_hide.c <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+head = ('#include <linux/version.h>\n\n'
+        '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)\n')
+tail = ('\n#else /* < 5.7.0: selinux_hide relies on struct selinux_policy */\n'
+        'void ksu_selinux_hide_init(void) {}\n'
+        'void ksu_selinux_hide_exit(void) {}\n'
+        'void ksu_selinux_hide_drop_backup_if_unused(void) {}\n'
+        'void ksu_selinux_hide_handle_second_stage(void) {}\n'
+        'void ksu_selinux_hide_handle_post_fs_data(void) {}\n'
+        '#endif\n')
+assert 'LINUX_VERSION_CODE' not in s.split('\n')[0]
+open(p, 'w', encoding='utf-8', newline='\n').write(head + s + tail)
+print('[*] selinux_hide.c guarded')
+PYEOF
+    python3 - selinux/rules.c <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+head = ('#include <linux/version.h>\n'
+        '#include <linux/types.h>\n'
+        '#include <linux/compiler_types.h>\n'
+        '#include <linux/errno.h>\n\n'
+        '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)\n')
+tail = ('\n#else /* < 5.7.0: no struct selinux_policy, so no sepolicy patching */\n'
+        'struct selinux_policy *backup_sepolicy = NULL;\n\n'
+        'void apply_kernelsu_rules(void)\n'
+        '{\n'
+        '\tpr_warn("ksu: sepolicy rules need kernel 5.7+, skipped on 4.19\\n");\n'
+        '}\n\n'
+        'int handle_sepolicy(void __user *user_data, u64 data_len)\n'
+        '{\n'
+        '\treturn -EOPNOTSUPP;\n'
+        '}\n'
+        '#endif\n')
+open(p, 'w', encoding='utf-8', newline='\n').write(head + s + tail)
+print('[*] rules.c guarded')
+PYEOF
+    python3 - selinux/sepolicy.c <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+head = ('#include <linux/version.h>\n\n'
+        '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)\n')
+tail = ('\n#else /* < 5.7.0: policydb rewrite helpers are 5.7+ only */\n'
+        'static int __maybe_unused ksu_sepolicy_stub;\n'
+        '#endif\n')
+open(p, 'w', encoding='utf-8', newline='\n').write(head + s + tail)
+print('[*] sepolicy.c guarded')
+PYEOF
+    grep -n 'LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)' feature/selinux_hide.c selinux/rules.c selinux/sepolicy.c || true
 fi
 
 # ==========================================
