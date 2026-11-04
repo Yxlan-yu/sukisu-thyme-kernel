@@ -14,14 +14,23 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Set up Environment
+      - name: Set up Environment (core deps)
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex gawk \
-            git gnupg gperf imagemagick libncurses-dev \
-            lib32readline-dev lib32z1-dev liblz4-tool \
-            libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync \
-            schedtool squashfs-tools xsltproc zip zlib1g-dev python3
+          sudo apt-get install -y \
+            bc bison build-essential ccache curl flex gawk git gnupg gperf \
+            imagemagick libncurses-dev libssl-dev libxml2-utils lz4 lzop \
+            device-tree-compiler rsync schedtool squashfs-tools xsltproc \
+            zip unzip zlib1g-dev python3
+
+      - name: Set up Environment (optional deps, non-fatal)
+        run: |
+          sudo apt-get install -y lib32readline-dev lib32z1-dev libsdl1.2-dev \
+            pngcrush || echo "::warning::some optional apt packages unavailable on this runner"
+          echo "--- required tool check ---"
+          for t in bc bison flex gcc make ccache lz4 lzop dtc zip; do
+            printf '%-8s ' "$t"; command -v "$t" || echo MISSING
+          done
 
       - name: Cache ccache
         uses: actions/cache@v6
