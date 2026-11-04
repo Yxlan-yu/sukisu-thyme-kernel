@@ -1,0 +1,82 @@
+name: Build SukiSU Kernel (thyme)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-thyme:
+    name: Build thyme | SukiSU v4.3.0-r1 | MIUI
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Set up Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache curl flex gawk \
+            git gnupg gperf imagemagick libncurses-dev \
+            lib32readline-dev lib32z1-dev liblz4-tool \
+            libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync \
+            schedtool squashfs-tools xsltproc zip zlib1g-dev python3
+
+      - name: Cache ccache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache_mikernel
+          key: ${{ runner.os }}-kernel-ccache-thyme-sukisu-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-kernel-ccache-thyme-sukisu-
+            ${{ runner.os }}-kernel-ccache-thyme-
+
+      - name: Fetch kernel source (android17-aptusitu)
+        run: |
+          curl -L --retry 5 -o src.tar.gz https://codeload.github.com/AstideLabs/android_kernel_xiaomi_sm8250/tar.gz/refs/heads/android17-aptusitu
+          ls -l src.tar.gz
+          mkdir -p kernel
+          tar -xzf src.tar.gz -C kernel --strip-components=1
+          ls kernel | head -40
+          test -f kernel/arch/arm64/configs/thyme_defconfig
+
+      - name: Setup zyc-clang 16 Toolchain
+        run: |
+          mkdir -p $HOME/zyc-clang
+          cd $HOME/zyc-clang
+          wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260807-release/Clang-16.0.6-20260807.tar.gz
+          tar -zxvf Clang-16.0.6-20260807.tar.gz
+          $HOME/zyc-clang/bin/clang --version
+
+      - name: Build kernel with SukiSU
+        run: |
+          ccache -M 10G
+          cd kernel
+          chmod +x ../build_kernel.sh
+          bash ../build_kernel.sh thyme ksu miui
+
+      - name: Collect outputs
+        if: always()
+        run: |
+          echo "=== build outputs ==="
+          ls -l kernel/APTKernel_*.zip || true
+          ls -l kernel/out_miui/arch/arm64/boot/ || true
+          if [ -f kernel/out_miui/.config ]; then
+            echo "=== KSU/KPROBES lines in .config ==="
+            grep -E '^CONFIG_(KSU|KPROBES|KALLSYMS|KALLSYMS_ALL|EXT4_FS|MODULES)' kernel/out_miui/.config || true
+          fi
+
+      - name: Upload flashable ZIP + raw Image
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: SukiSU-thyme-${{ github.run_id }}
+          path: |
+            kernel/APTKernel_*.zip
+            kernel/out_miui/arch/arm64/boot/Image
+            kernel/out_miui/arch/arm64/boot/dtb
+            kernel/out_miui/arch/arm64/boot/dtbo.img
+            kernel/out_miui/.config
+          compression-level: 0
+          if-no-files-found: warn
